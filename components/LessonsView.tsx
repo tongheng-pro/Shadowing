@@ -3,6 +3,7 @@
 import { useEffect, useRef } from 'react';
 import type { Lesson, Stats } from '@/lib/types';
 import { dayKey, streak } from '@/lib/utils';
+import { bookmarkletHref } from '@/lib/bookmarklet';
 import { BoltIcon, FireIcon, PlayIcon, SpeakerIcon, VideoIcon } from './Icons';
 
 interface LessonsViewProps {
@@ -16,22 +17,13 @@ interface LessonsViewProps {
   toast: (msg: string) => void;
 }
 
-/** Bookmarklet code: opens the current YouTube video in this app. */
-function bookmarkletCode(base: string): string {
-  return (
-    "javascript:(()=>{const v=new URLSearchParams(location.search).get('v')||(location.pathname.match(/(?:shorts|live)\\/([\\w-]{11})/)||[])[1];if(!v)return alert('Open a YouTube video first');location.href='" +
-    base +
-    "?v='+v})()"
-  );
-}
-
 export default function LessonsView({ active, lessons, currentId, stats, onOpen, onDelete, onNew, toast }: LessonsViewProps) {
   const bmRef = useRef<HTMLAnchorElement>(null);
 
   // React blocks `javascript:` URLs in the href prop, so set the attribute directly.
   useEffect(() => {
     const base = location.href.split(/[?#]/)[0];
-    bmRef.current?.setAttribute('href', bookmarkletCode(base));
+    bmRef.current?.setAttribute('href', bookmarkletHref(base));
   }, []);
 
   const days = stats.days;
@@ -80,7 +72,9 @@ export default function LessonsView({ active, lessons, currentId, stats, onOpen,
           One click from YouTube
         </b>
         <p className="hint">
-          Drag this button to your bookmarks bar. On any YouTube video, click it to open that video here, ready to shadow.
+          Drag this button to your bookmarks bar. On any YouTube video, click it: the captions are read in your browser
+          and the video opens here, ready to shadow. Works even when YouTube blocks the server. (Already have the old
+          bookmark? Delete it and drag this one again.)
         </p>
         <a
           className="file-btn"

@@ -14,6 +14,8 @@ import { useCallback, useEffect, useEffectEvent, useMemo, useRef, useState } fro
 import { CYCLE_LABEL, DEFAULT_SETTINGS, OPTS, SAMPLE, SAMPLE_TITLE, STORAGE_KEYS, type CycleKey, type Opt } from '@/lib/constants';
 import { cleanText, finishTimes, hasTimes, makeLesson, mergeSentences, ytId } from '@/lib/parser';
 import { compareWords, norm } from '@/lib/scoring';
+import { parseCaptions } from '@/lib/captions';
+import { decodeCaptionPayload } from '@/lib/bookmarklet';
 import type {
   DialogOptions,
   DialogResult,
@@ -31,6 +33,7 @@ import type {
   Stats,
   ToastAction,
   TranscriptResponse,
+  TranscriptSegment,
   View,
   WordEntry,
   WordLookup,
@@ -580,6 +583,62 @@ export default function ShadowingApp() {
     }
   };
 
+  /** Build + open a lesson from caption segments (server API or bookmarklet). */
+  const createYouTubeLesson = (
+    vid: string,
+    d: { title: string; kind: 'manual' | 'auto'; segments: TranscriptSegment[] },
+  ): void => {
+    const segs = d.segments
+      .map((s) => ({ start: s.start, end: s.end, text: cleanText(s.text) }))
+      .filter((s) => s.text);
+    const punct = segs.filter((s) => /[.!?]/.test(s.text)).length;
+    // auto captions often have no punctuation → shorter chunks
+    const merged = mergeSentences(segs, punct < segs.length * 0.15 ? 14 : 30);
+    const L: Lesson = {
+      id: uid(),
+      title: d.title || 'YouTube lesson',
+      videoId: vid,
+      created: Date.now(),
+      segments: finishTimes(merged),
+      prog: {},
+      lastIdx: 0,
+    };
+    lessons.set((prev) => [L, ...prev]);
+    openLesson(L);
+    showView('practice');
+    toast(`${L.segments.length} lines ready${d.kind === 'auto' ? ' (auto captions)' : ''} — press Play`);
+  };
+
+  /** Open a lesson that was already made from this video. */
+  const openExistingVideo = (vid: string): boolean => {
+    const exist = lessons.ref.current.find((l) => l.videoId === vid);
+    if (!exist) return false;
+    openLesson(exist);
+    showView('practice');
+    toast('Opened your saved lesson — press Play');
+    return true;
+  };
+
+  /**
+   * Bookmarklet import: captions were fetched on youtube.com in the user's browser
+   * and passed in the URL hash (#cap=…). No server request → not affected by YouTube
+   * blocking cloud servers. Falls back to the server API if the payload is unusable.
+   */
+  const importFromBookmarklet = async (url: string, cap: string): Promise<void> => {
+    const vid = ytId(url);
+    if (!vid) {
+      toast('Paste a valid YouTube link');
+      return;
+    }
+    if (openExistingVideo(vid)) return;
+    setQuickLoading(true);
+    const data = await decodeCaptionPayload(cap);
+    const segments = data ? parseCaptions(data.xml) : [];
+    setQuickLoading(false);
+    if (data && segments.length) createYouTubeLesson(vid, { title: data.title, kind: data.kind, segments });
+    else void quickStart(url);
+  };
+
   /* ---------- quick start: YouTube link → transcript → shadow ---------- */
   const quickStart = async (url: string): Promise<boolean> => {
     const vid = ytId(url);
@@ -587,46 +646,28 @@ export default function ShadowingApp() {
       toast('Paste a valid YouTube link');
       return false;
     }
-    const exist = lessons.ref.current.find((l) => l.videoId === vid);
-    if (exist) {
-      openLesson(exist);
-      showView('practice');
-      toast('Opened your saved lesson — press Play');
-      return true;
-    }
+    if (openExistingVideo(vid)) return true;
     setQuickLoading(true);
     try {
       const r = await fetch('/api/transcript?v=' + vid);
       if (!(r.headers.get('content-type') || '').includes('json')) throw new Error(NO_API);
       const d = (await r.json()) as TranscriptResponse;
       if (!r.ok || 'error' in d) throw new Error(('error' in d && d.error) || 'Could not get the transcript');
-
-      const segs = d.segments
-        .map((s) => ({ start: s.start, end: s.end, text: cleanText(s.text) }))
-        .filter((s) => s.text);
-      const punct = segs.filter((s) => /[.!?]/.test(s.text)).length;
-      // auto captions often have no punctuation → shorter chunks
-      const merged = mergeSentences(segs, punct < segs.length * 0.15 ? 14 : 30);
-      const L: Lesson = {
-        id: uid(),
-        title: d.title || 'YouTube lesson',
-        videoId: vid,
-        created: Date.now(),
-        segments: finishTimes(merged),
-        prog: {},
-        lastIdx: 0,
-      };
-      lessons.set((prev) => [L, ...prev]);
-      openLesson(L);
-      showView('practice');
-      toast(`${L.segments.length} lines ready${d.kind === 'auto' ? ' (auto captions)' : ''} — press Play`);
+      createYouTubeLesson(vid, d);
       return true;
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       if (msg === NO_API || e instanceof TypeError) {
         toast('Could not reach the transcript server. Is the app running?');
       } else {
-        toast(msg);
+        // Offer the bookmarklet (works when YouTube blocks the server).
+        toast(msg, {
+          label: 'Use bookmark',
+          onClick: () => {
+            closeSheets();
+            showView('lessons');
+          },
+        });
         // fallback: open the manual sheet with the link filled in
         setDraft((dr) => ({ ...dr, url: 'https://www.youtube.com/watch?v=' + vid }));
         later(() => openSheet('new'), 1200);
@@ -648,9 +689,11 @@ export default function ShadowingApp() {
     setReady(true);
     const qs = new URLSearchParams(location.search);
     const qv = qs.get('v') || qs.get('url');
+    const cap = new URLSearchParams(location.hash.slice(1)).get('cap');
     if (qv) {
-      history.replaceState(null, '', location.pathname);
-      void quickStart(qv);
+      history.replaceState(null, '', location.pathname); // also drops the (large) #cap= hash
+      if (cap) void importFromBookmarklet(qv, cap);
+      else void quickStart(qv);
     }
   });
   useEffect(() => {

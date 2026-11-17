@@ -41,6 +41,7 @@ npm run start        # serve the production build (port 3000)
 1. Paste a YouTube link in the top bar → the transcript loads → press Play.
 2. Or open `http://localhost:3000/?v=VIDEO_ID` (also `?url=<youtube link>`).
 3. Or drag the **"Shadow this video"** bookmarklet (Lessons tab) to your bookmarks bar and click it on any YouTube video.
+   **Use this on Vercel / any cloud host** — see "YouTube blocks cloud servers" below.
 
 If a video has no captions, the manual "New lesson" sheet opens with the link filled in.
 
@@ -250,10 +251,30 @@ npm run build
 pm2 restart shadowing
 ```
 
+## YouTube blocks cloud servers (Vercel)
+
+`/api/transcript` asks YouTube for captions **from the server**. Vercel functions run on AWS (`x-vercel-id: …::iad1`),
+and YouTube refuses most requests from cloud IP ranges, so on Vercel pasting a link usually fails with
+"YouTube blocked the server". Measured on the deployed app: 4 of 5 videos that work locally returned 422 on Vercel.
+
+**Fix: the "Shadow this video" bookmarklet** (`lib/bookmarklet.ts`). It runs on youtube.com in your own browser
+(home IP), fetches the captions there, and opens the app with them in the URL hash:
+
+```
+<app>/?v=VIDEO_ID#cap=<base64url(deflate-raw(JSON {t,l,k,x: caption XML}))>
+```
+
+- The hash is never sent to the server; the app decodes it (`decodeCaptionPayload`) and parses it with the same
+  `lib/captions.ts` parser the server uses → identical lessons. No `/api/transcript` call is made.
+- If the payload is missing or broken, the app falls back to `/api/transcript` (works locally / on non-blocked hosts).
+- A 14-minute TED talk is about 11 K characters of hash; Chrome allows URLs up to 2 MB.
+- After updating the app, **delete the old bookmark and drag the new one** — the bookmark stores the code.
+- Bookmarklets are a desktop feature; on phones use the manual paste sheet or the app on a host that YouTube allows.
+
 ## Known limitations
 
 - Speech scoring needs Chrome or Edge (Web Speech API). Recording works in other browsers.
-- YouTube may block caption requests from some server IPs (datacenter ranges). The app then shows the error and
-  opens the manual paste sheet.
+- YouTube blocks most caption requests from cloud servers (see below). Pasting a link then fails on Vercel;
+  use the bookmarklet or paste the transcript.
 - Some videos do not allow embedding; the player shows a "Video error" toast.
 # Shadowing

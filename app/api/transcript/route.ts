@@ -12,7 +12,8 @@
    ========================================================= */
 import { cacheLife } from 'next/cache';
 import type { NextRequest } from 'next/server';
-import type { TranscriptData, TranscriptResponse, TranscriptSegment } from '@/lib/types';
+import { decodeEntities, parseCaptions } from '@/lib/captions';
+import type { TranscriptData, TranscriptResponse } from '@/lib/types';
 
 const VIDEO_ID = /^[\w-]{11}$/;
 
@@ -132,7 +133,7 @@ async function fetchTranscript(v: string): Promise<TranscriptResult> {
 
   if (!tracks.length) {
     return fail(
-      'This video has no captions, or YouTube blocked the request. Try another video or paste the transcript manually.',
+      'This video has no captions, or YouTube blocked the server. Use the “Shadow this video” bookmark on YouTube, or paste the transcript manually.',
     );
   }
 
@@ -173,29 +174,6 @@ async function fetchTranscript(v: string): Promise<TranscriptResult> {
   };
 }
 
-function parseCaptions(xml: string): TranscriptSegment[] {
-  const segments: TranscriptSegment[] = [];
-
-  const textTags = [...xml.matchAll(/<text start="([\d.]+)"(?:\s+dur="([\d.]+)")?[^>]*>([\s\S]*?)<\/text>/g)];
-  if (textTags.length) {
-    for (const m of textTags) {
-      const text = clean(m[3]);
-      if (!text) continue;
-      const start = parseFloat(m[1]);
-      segments.push({ start, end: start + (m[2] ? parseFloat(m[2]) || 2 : 2), text });
-    }
-    return segments;
-  }
-
-  for (const m of xml.matchAll(/<p t="(\d+)"(?:\s+d="(\d+)")?[^>]*>([\s\S]*?)<\/p>/g)) {
-    const text = clean(m[3]);
-    if (!text) continue;
-    const start = parseInt(m[1], 10) / 1000;
-    segments.push({ start, end: start + (m[2] ? parseInt(m[2], 10) || 2000 : 2000) / 1000, text });
-  }
-  return segments;
-}
-
 /* ---------- helpers ---------- */
 function parseJson(s: string): PlayerResponse | null {
   try {
@@ -221,44 +199,4 @@ function readTracks(j: PlayerResponse): CaptionTrack[] {
     });
   }
   return out;
-}
-
-const NAMED_ENTITIES: Record<string, string> = {
-  amp: '&',
-  lt: '<',
-  gt: '>',
-  quot: '"',
-  apos: "'",
-  nbsp: ' ',
-  hellip: '…',
-  mdash: '—',
-  ndash: '–',
-  lsquo: '‘',
-  rsquo: '’',
-  ldquo: '“',
-  rdquo: '”',
-  laquo: '«',
-  raquo: '»',
-  copy: '©',
-  reg: '®',
-  trade: '™',
-};
-
-/** Like PHP html_entity_decode: named + decimal + hex entities. */
-function decodeEntities(s: string): string {
-  return s.replace(/&(#x[0-9a-f]+|#\d+|[a-z][a-z0-9]*);/gi, (whole, code: string) => {
-    if (code[0] === '#') {
-      const hex = code[1] === 'x' || code[1] === 'X';
-      const n = parseInt(code.slice(hex ? 2 : 1), hex ? 16 : 10);
-      return Number.isFinite(n) && n >= 0 && n <= 0x10ffff ? String.fromCodePoint(n) : whole;
-    }
-    return NAMED_ENTITIES[code.toLowerCase()] ?? whole;
-  });
-}
-
-/** Decode → strip tags → decode again → collapse spaces (same as transcript.php clean()). */
-function clean(s: string): string {
-  const once = decodeEntities(s);
-  const twice = decodeEntities(once.replace(/<[^>]*>/g, ''));
-  return twice.replace(/\s+/g, ' ').trim();
 }
